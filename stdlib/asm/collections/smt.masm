@@ -1,0 +1,201 @@
+#! input:  [v, ...]
+#! output: [v >> 48, ...]
+proc.shr_48
+    u32split
+    push.65536
+    mul
+    u32split
+    swap
+    drop
+    swap
+    drop
+end
+
+#! input:  [v, ...]
+#! output: [v >> 32, ...]
+proc.shr_32
+    u32split
+    swap
+    drop
+end
+
+#! input:  [v, ...]
+#! output: [v >> 16, ...]
+proc.shr_16
+    u32split
+    push.65536
+    mul
+    u32split
+    push.4294967296
+    mul
+    swap.2
+    push.65536
+    mul
+    u32split
+    swap
+    drop
+    add
+    add
+end
+
+#! input:  [V, K, R, ...]
+#! output: [V, R, ...]
+proc.get_16
+    # compute remaining path key `(k3 << 16) >> 16`
+    # [K', V, K, R, ...]
+    dupw.1 u32split push.65536 mul u32split drop
+    push.65536 mul u32split swap drop push.4294967296
+    mul add
+
+    # execute the permutation with the depth as domain
+    # [N, V, K, R, ...]
+    dupw.1 push.0.16.0.0 movdnw.2 hperm dropw swapw dropw
+
+    # add flag on whether value is zero
+    # [V == 0, N, V, K, R, ...]
+    dupw.1 padw eqw movdn.8 dropw dropw
+
+    # create a "zero or empty constant" word
+    # [N', V, K, R, ...]
+    dup push.17483286922353768131 mul movup.5 dup.2 not mul add
+    dup.1 push.353378057542380712 mul movup.5 dup.3 not mul add
+    dup.2 push.1935183237414585408 mul movup.5 dup.4 not mul add
+    dup.3 push.4820339620987989650 mul movup.5 dup.5 not mul add
+    movup.4 drop
+
+    # check the opening value
+    # [V', N', V, K, R, ...]
+    dupw.3 dup.12 exec.shr_48 push.16 mtree_get swapw dropw
+
+    # assert open and return values
+    # [V, R, ...]
+    assert_eqw swapw dropw
+end
+
+#! input:  [V, K, R, ...]
+#! output: [V, R, ...]
+proc.get_32
+    # compute remaining path key `(k3 << 32) >> 32`
+    # [K', V, K, R, ...]
+    dupw.1 u32split drop
+
+    # execute the permutation with the depth as domain
+    # [N, V, K, R, ...]
+    dupw.1 push.0.32.0.0 movdnw.2 hperm dropw swapw dropw
+
+    # add flag on whether value is zero
+    # [V == 0, N, V, K, R, ...]
+    dupw.1 padw eqw movdn.8 dropw dropw
+
+    # create a "zero or empty constant" word
+    # [N', V, K, R, ...]
+    dup push.11677748883385181208 mul movup.5 dup.2 not mul add
+    dup.1 push.15891398395707500576 mul movup.5 dup.3 not mul add
+    dup.2 push.3790704659934033620 mul movup.5 dup.4 not mul add
+    dup.3 push.2126099371106695189 mul movup.5 dup.5 not mul add
+    movup.4 drop
+
+    # check the opening value
+    # [V', N', V, K, R, ...]
+    dupw.3 dup.12 exec.shr_32 push.32 mtree_get swapw dropw
+
+    # assert open and return values
+    # [V, R, ...]
+    assert_eqw swapw dropw
+end
+
+#! input:  [V, K, R, ...]
+#! output: [V, R, ...]
+proc.get_48
+    # compute remaining path key `(k3 << 48) >> 48`
+    # [K', V, K, R, ...]
+    dupw.1 u32split drop push.65536 mul u32split drop
+    push.65536 mul u32split swap drop
+
+    # execute the permutation with the depth as domain
+    # [N, V, K, R, ...]
+    dupw.1 push.0.48.0.0 movdnw.2 hperm dropw swapw dropw
+
+    # add flag on whether value is zero
+    # [V == 0, N, V, K, R, ...]
+    dupw.1 padw eqw movdn.8 dropw dropw
+
+    # create a "zero or empty constant" word
+    # [N', V, K, R, ...]
+    dup push.10650694022550988030 mul movup.5 dup.2 not mul add
+    dup.1 push.5634734408638476525 mul movup.5 dup.3 not mul add
+    dup.2 push.9233115969432897632 mul movup.5 dup.4 not mul add
+    dup.3 push.1437907447409278328 mul movup.5 dup.5 not mul add
+    movup.4 drop
+
+    # check the opening value
+    # [V', N', V, K, R, ...]
+    dupw.3 dup.12 exec.shr_16 push.48 mtree_get swapw dropw
+
+    # assert open and return values
+    # [V, R, ...]
+    assert_eqw swapw dropw
+end
+
+#! input:  [V, K, R, ...]
+#! output: [V, R, ...]
+proc.get_64
+    # compute remaining path key `(k3 << 64) >> 64`
+    # [K', V, K, R, ...]
+    dupw.1 drop push.0
+
+    # execute the permutation with the depth as domain
+    # [N, V, K, R, ...]
+    dupw.1 push.0.64.0.0 movdnw.2 hperm dropw swapw dropw
+
+    # add flag on whether value is zero
+    # [V == 0, N, V, K, R, ...]
+    dupw.1 padw eqw movdn.8 dropw dropw
+
+    # create a "zero or empty constant" word
+    # [N', V, K, R, ...]
+    movup.4 dup.1 not mul
+    movup.4 dup.2 not mul
+    movup.4 dup.3 not mul
+    movup.4 dup.4 not mul
+    movup.4 drop
+
+    # check the opening value
+    # [V', N', V, K, R, ...]
+    dupw.3 dup.12 push.64 mtree_get swapw dropw
+
+    # assert open and return values
+    # [V, R, ...]
+    assert_eqw swapw dropw
+end
+
+#! Fetches the keyed value of a Sparse Merkle tree with the provided root.
+#!
+#! `V` will be `0` if there is no leaf value for `K` in `R`.
+#!
+#! input:  [K, R, ...]
+#! output: [V, R, ...]
+export.get
+    # invoke adv and fetch target depth flags
+    # [d in {16, 32}, d in {16, 48}, V, K, R, ...]
+    adv.smtget adv_push.6
+
+    # call the inner procedure depending on the depth
+    if.true
+        if.true
+            # depth 16
+            exec.get_16
+        else
+            # depth 32
+            exec.get_32
+        end
+    else
+        if.true
+            # depth 48
+            exec.get_48
+        else
+            # depth 64
+            exec.get_64
+        end
+    end
+end

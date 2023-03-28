@@ -2,6 +2,12 @@
 
 ## 0.6.0 (TBD)
 
+#### Assembly
+- Added new instructions: `adv.smtget`.
+
+#### Stdlib
+- Added new module: `collections::smt` with `smt::get`.
+
 ## 0.5.0 (2023-03-29)
 
 #### CLI

@@ -261,6 +261,7 @@ pub enum Instruction {
     AdvMem(u32, u32),
     AdvExt2Inv,
     AdvExt2INTT,
+    AdvSmtGet,
 
     // ----- cryptographic operations -------------------------------------------------------------
     Hash,
@@ -536,6 +537,7 @@ impl fmt::Display for Instruction {
             Self::AdvMem(start_addr, num_words) => write!(f, "adv.mem.{start_addr}.{num_words}"),
             Self::AdvExt2Inv => write!(f, "adv.ext2inv"),
             Self::AdvExt2INTT => write!(f, "adv.ext2intt"),
+            Self::AdvSmtGet => write!(f, "adv.smtget"),
 
             // ----- cryptographic operations -----------------------------------------------------
             Self::Hash => write!(f, "hash"),

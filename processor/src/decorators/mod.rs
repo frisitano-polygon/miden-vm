@@ -1,8 +1,11 @@
 use super::{
     AdviceInjector, AdviceProvider, AdviceSource, Decorator, ExecutionError, Felt, Process,
-    StarkField,
+    StarkField, Word,
 };
-use vm_core::{utils::collections::Vec, FieldElement, QuadExtension, WORD_SIZE, ZERO};
+use vm_core::{
+    crypto::merkle::EmptySubtreeRoots, utils::collections::Vec, FieldElement, QuadExtension,
+    WORD_SIZE, ZERO,
+};
 use winter_prover::math::fft;
 
 // TYPE ALIASES
@@ -47,6 +50,7 @@ where
             }
             AdviceInjector::Ext2Inv => self.inject_ext2_inv_result(),
             AdviceInjector::Ext2INTT => self.inject_ext2_intt_result(),
+            AdviceInjector::SmtGet => self.inject_smtget(),
         }
     }
 
@@ -278,6 +282,80 @@ where
 
         Ok(())
     }
+
+    /// Pushes the value and depth flags of a leaf indexed by `key` on a Sparse Merkle tree with
+    /// the provided `root`.
+    ///
+    /// The Sparse Merkle tree is tiered, meaning it will have leaf depths in `{16, 32, 48, 64}`.
+    /// The depth flags will allow the definition of the value. It is implemented that way to
+    /// minimize the assembly instructions to branch to the target depth.
+    ///
+    /// The operand stack is expected to be arranged as follows:
+    /// - key, 4 elements.
+    /// - root of the Sparse Merkle tree, 4 elements.
+    ///
+    /// After a successful operation, the advice stack will look as follows:
+    /// - boolean flag if depth is `16` or `32`.
+    /// - boolean flag if depth is `16` or `48`.
+    /// - value word; will be zeroed if the tree don't contain a mapped value for the key.
+    ///
+    /// # Errors
+    /// Will return an error if:
+    /// - The provided Merkle root doesn't exist on the advice provider
+    /// - If, at depth `64`, the node value is not zero, and there is no associated leaf value
+    fn inject_smtget(&mut self) -> Result<(), ExecutionError> {
+        let empty = EmptySubtreeRoots::empty_hashes(64);
+
+        // fetch the arguments from the operand stack
+        let key = [self.stack.get(3), self.stack.get(2), self.stack.get(1), self.stack.get(0)];
+        let root = [self.stack.get(7), self.stack.get(6), self.stack.get(5), self.stack.get(4)];
+        let base_index = key[3].as_int();
+
+        // execute for all tiers
+        for depth_value in [16, 32, 48, 64] {
+            // compute the depth index pair
+            let depth = Felt::new(depth_value);
+            let index = base_index >> (64 - depth_value);
+            let index = Felt::new(index);
+
+            // set depth flags
+            let is_16_or_32 = Felt::new((depth_value == 16 || depth_value == 32) as u64);
+            let is_16_or_48 = Felt::new((depth_value == 16 || depth_value == 48) as u64);
+
+            // fetch the node; halt if zero
+            let node = self.advice_provider.get_tree_node(root, &depth, &index)?;
+            if node == Word::from(empty[depth_value as usize]) {
+                self.advice_provider.push_stack(AdviceSource::Value(is_16_or_32))?;
+                self.advice_provider.push_stack(AdviceSource::Value(is_16_or_48))?;
+                self.advice_provider.push_stack(AdviceSource::Value(ZERO))?;
+                self.advice_provider.push_stack(AdviceSource::Value(ZERO))?;
+                self.advice_provider.push_stack(AdviceSource::Value(ZERO))?;
+                self.advice_provider.push_stack(AdviceSource::Value(ZERO))?;
+                return Ok(());
+            }
+
+            // fetch the leaf value; move to next tier if not leaf (i.e. value doesn't exist)
+            match self.advice_provider.push_stack(AdviceSource::Map { key: node }) {
+                Ok(()) => {
+                    let value = self.advice_provider.pop_stack_word()?;
+                    self.advice_provider.push_stack(AdviceSource::Value(is_16_or_32))?;
+                    self.advice_provider.push_stack(AdviceSource::Value(is_16_or_48))?;
+                    self.advice_provider.push_stack(AdviceSource::Value(value[3]))?;
+                    self.advice_provider.push_stack(AdviceSource::Value(value[2]))?;
+                    self.advice_provider.push_stack(AdviceSource::Value(value[1]))?;
+                    self.advice_provider.push_stack(AdviceSource::Value(value[0]))?;
+                    return Ok(());
+                }
+                // TODO this shouldn't really be an error. instead, the advice lookup should return
+                // `Option`
+                Err(ExecutionError::AdviceKeyNotFound(_)) if depth_value < 64 => (),
+                Err(e) => return Err(e),
+            };
+        }
+
+        // this is in fact unreachable as the last tier will always end the function
+        Err(ExecutionError::AdviceKeyNotFound(key))
+    }
 }
 
 // HELPER FUNCTIONS
@@ -296,12 +374,16 @@ fn u64_to_u32_elements(value: u64) -> (Felt, Felt) {
 mod tests {
     use super::{
         super::{AdviceInputs, Felt, FieldElement, Kernel, Operation, StarkField},
-        Process,
+        Process, WORD_SIZE, ZERO,
     };
     use crate::{MemAdviceProvider, StackInputs, Word};
     use vm_core::{
-        crypto::merkle::{MerkleStore, MerkleTree},
-        AdviceInjector, Decorator,
+        crypto::{
+            hash::{Blake3_256, Rpo256},
+            merkle::{EmptySubtreeRoots, MerkleStore, MerkleTree, NodeIndex},
+        },
+        utils::IntoBytes,
+        AdviceInjector, Decorator, ONE,
     };
 
     #[test]
@@ -348,6 +430,127 @@ mod tests {
             tree.root()[0],
         ]);
         assert_eq!(expected_stack, process.stack.trace_state());
+    }
+
+    #[test]
+    fn inject_smtget() {
+        let empty = EmptySubtreeRoots::empty_hashes(64);
+        let initial_root = Word::from(empty[0]);
+        let seed = Blake3_256::hash(b"some-seed");
+
+        // compute pseudo-random key/value pair
+        let key = <[u8; 8]>::try_from(&(*seed)[..8]).unwrap();
+        let key = u64::from_le_bytes(key);
+        let key = [Felt::new(key); WORD_SIZE];
+        let value = <[u8; 8]>::try_from(&(*seed)[8..16]).unwrap();
+        let value = u64::from_le_bytes(value);
+        let value = [Felt::new(value); WORD_SIZE];
+
+        fn assert_case(
+            key: Word,
+            value: Word,
+            node: Word,
+            root: Word,
+            store: MerkleStore,
+            expected_stack: &[Felt],
+        ) {
+            // build the process
+            let stack_inputs = StackInputs::try_from_values([
+                root[0].as_int(),
+                root[1].as_int(),
+                root[2].as_int(),
+                root[3].as_int(),
+                key[0].as_int(),
+                key[1].as_int(),
+                key[2].as_int(),
+                key[3].as_int(),
+            ])
+            .unwrap();
+            let advice_inputs = AdviceInputs::default()
+                .with_merkle_store(store)
+                .with_map([(node.into_bytes(), value.into_iter().collect())]);
+            let advice_provider = MemAdviceProvider::from(advice_inputs);
+            let mut process = Process::new(Kernel::default(), stack_inputs, advice_provider);
+
+            // call the injector and clear the stack
+            process.execute_op(Operation::Noop).unwrap();
+            process.execute_decorator(&Decorator::Advice(AdviceInjector::SmtGet)).unwrap();
+            for _ in 0..8 {
+                process.execute_op(Operation::Drop).unwrap();
+            }
+
+            // expect the stack output
+            for _ in 0..expected_stack.len() {
+                process.execute_op(Operation::AdvPop).unwrap();
+            }
+            assert_eq!(build_expected(expected_stack), process.stack.trace_state());
+        }
+
+        // check leaves on empty trees
+        for depth in [16, 32, 48, 64] {
+            // compute the remaining key
+            let mut remaining = key;
+            remaining[3] = Felt::new((remaining[3].as_int() << depth.min(63)) >> depth.min(63));
+
+            // compute node value
+            let depth = Felt::new(depth as u64);
+            let store = MerkleStore::new();
+            let node = Rpo256::merge_in_domain(&[remaining.into(), value.into()], depth).into();
+
+            // expect absent value with constant depth 16
+            let expected = [ONE, ONE, ZERO, ZERO, ZERO, ZERO];
+            assert_case(key, value, node, initial_root, store, &expected);
+        }
+
+        // check leaves inserted on all tiers
+        for depth in [16, 32, 48, 64] {
+            // compute the remaining key
+            let mut remaining = key;
+            remaining[3] = Felt::new((remaining[3].as_int() << depth.min(63)) >> depth.min(63));
+
+            // set depth flags
+            let is_16_or_32 = (depth == 16 || depth == 32).then_some(ONE).unwrap_or(ZERO);
+            let is_16_or_48 = (depth == 16 || depth == 48).then_some(ONE).unwrap_or(ZERO);
+
+            // compute node value
+            let index = key[3].as_int() >> 64 - depth;
+            let index = NodeIndex::new(depth, index);
+            let depth = Felt::new(depth as u64);
+            let node = Rpo256::merge_in_domain(&[remaining.into(), value.into()], depth).into();
+
+            // set tier node value and expect the value from the injector
+            let mut store = MerkleStore::new();
+            let root = store.set_node(initial_root, index, node).unwrap().root;
+            let expected = [is_16_or_32, is_16_or_48, value[3], value[2], value[1], value[0]];
+            assert_case(key, value, node, root, store, &expected);
+        }
+
+        // check absent siblings of non-empty trees
+        for depth in [16, 32, 48, 64] {
+            // set depth flags
+            let is_16_or_32 = (depth == 16 || depth == 32).then_some(ONE).unwrap_or(ZERO);
+            let is_16_or_48 = (depth == 16 || depth == 48).then_some(ONE).unwrap_or(ZERO);
+
+            // compute the index of the absent node
+            let index = key[3].as_int() >> 64 - depth;
+            let index = NodeIndex::new(depth, index);
+
+            // compute the sibling index of the target with its remaining key and node
+            let sibling = index.sibling();
+            let mut sibling_key = key;
+            sibling_key[3] = Felt::new(sibling.value() >> depth.min(63));
+            let sibling_node = Rpo256::merge_in_domain(
+                &[sibling_key.into(), value.into()],
+                Felt::new(depth as u64),
+            )
+            .into();
+
+            // run the text, expecting absent target node
+            let mut store = MerkleStore::new();
+            let root = store.set_node(initial_root, sibling, sibling_node).unwrap().root;
+            let expected = [is_16_or_32, is_16_or_48, ZERO, ZERO, ZERO, ZERO];
+            assert_case(key, value, sibling_node, root, store, &expected);
+        }
     }
 
     // HELPER FUNCTIONS
