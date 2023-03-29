@@ -1,11 +1,13 @@
-pub use miden::{MemAdviceProvider, ProgramInfo, ProofOptions, StarkProof};
+pub use miden::{
+    math::{Felt, FieldElement},
+    MemAdviceProvider, ProgramInfo, ProofOptions, StarkProof,
+};
 pub use processor::{AdviceInputs, StackInputs};
 use processor::{ExecutionError, ExecutionTrace, Process, VmStateIterator};
 use proptest::prelude::*;
 use stdlib::StdLibrary;
-pub use vm_core::{
-    crypto::merkle::MerkleStore, stack::STACK_TOP_SIZE, Felt, FieldElement, Program, StackOutputs,
-};
+use vm_core::chiplets::hasher::{apply_permutation, hash_elements, STATE_WIDTH};
+pub use vm_core::{crypto::merkle::MerkleStore, stack::STACK_TOP_SIZE, Program, StackOutputs};
 
 pub mod crypto;
 
@@ -218,4 +220,23 @@ pub fn convert_to_stack(values: &[u64]) -> [Felt; STACK_TOP_SIZE] {
 // This is a proptest strategy for generating a random word with 4 values of type T.
 pub fn prop_randw<T: proptest::arbitrary::Arbitrary>() -> impl Strategy<Value = Vec<T>> {
     prop::collection::vec(any::<T>(), 4)
+}
+
+pub fn build_expected_perm(values: &[u64]) -> [Felt; STATE_WIDTH] {
+    let mut expected = [Felt::ZERO; STATE_WIDTH];
+    for (&value, result) in values.iter().zip(expected.iter_mut()) {
+        *result = Felt::new(value);
+    }
+    apply_permutation(&mut expected);
+    expected.reverse();
+
+    expected
+}
+
+pub fn build_expected_hash(values: &[u64]) -> [Felt; 4] {
+    let digest = hash_elements(&values.iter().map(|&v| Felt::new(v)).collect::<Vec<_>>());
+    let mut expected: [Felt; 4] = digest.into();
+    expected.reverse();
+
+    expected
 }
